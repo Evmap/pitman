@@ -76,11 +76,11 @@ object Huffman {
    *   }
    */
   def times(chars: List[Char]): List[(Char, Int)] = {
-    def incr(acc:Map[Char, Int], c:Char) = {
-      val count = (acc get c).getOrElse(0) + 1
-      acc + ((c, count))
+    def rec(charList: List[Char], acc: List[(Char, Int)]): List[(Char, Int)] = charList match {
+      case Nil => acc
+      case x :: xs => rec(xs.filter(_ != x), (x, charList.count(_ == x)) :: acc)
     }
-      (Map[Char,Int]() /: chars)(incr).iterator.toList
+    rec(chars, List())
   }
   
   /**
@@ -89,14 +89,14 @@ object Huffman {
    * Возвращает список, который должен быть упорядочен по возрастанию весов (т.е.
    * голова списка должна иметь наименьший вес), где вес узла - есть частота символа.
    */
-  def makeOrderedLeafList(freqs: List[(Char, Int)]): List[Leaf] = {
-    freqs.sortWith((f1,f2) => f1._2 < f2._2).map((f) => Leaf (f._1, f._2))
-  }
+  def makeOrderedLeafList(freqs: List[(Char, Int)]): List[Leaf] =
+    freqs.sortBy(_._2).map(p => Leaf(p._1, p._2))
+
   
   /**
    * Проверяет, содержит ли список `trees` только одно кодовое дерево.
    */
-    def singleton(trees: List[CodeTree]): Boolean = trees.size == 1
+  def singleton(trees: List[CodeTree]): Boolean = trees.length == 1
   
   /**
    * Параметр `trees` этой функции - список деревьев кода, упорядоченных по возрастанию весов.
@@ -108,11 +108,11 @@ object Huffman {
    * Если `trees` является списком, меньше чем из двух элементов, список дожен вернуться неизменным
    */
   def combine(trees: List[CodeTree]): List[CodeTree] = trees match {
-    case left :: right :: cs => (makeCodeTree(left, right) :: cs)
-        .sortWith((t1, t2) => weight(t1) < weight(t2))
-    case _ => trees
+    case Nil => trees
+    case x :: Nil => trees
+    case a :: b :: xs => (makeCodeTree(a, b) :: trees.tail.tail).sortBy(weight(_))
   }
-  
+
   /**
    * Эта функция будет вызвана следующим образом:
    *
@@ -130,17 +130,17 @@ object Huffman {
    *    Еще определите тип возвращаемого значения функции `until`.
    *  - постарайтесь подобрать значимые имена параметров для `xxx`, `yyy` и `zzz`.
    */
-  def until(p: List[CodeTree]=>Boolean, f: List[CodeTree]=>List[CodeTree])(trees: List[CodeTree]): List[CodeTree] = {
-    if (p(trees)) trees
-    else until(p, f)( f(trees) )
-  }
+  def until(s: List[CodeTree] => Boolean, c: List[CodeTree] => List[CodeTree])(trees: List[CodeTree]): CodeTree =
+    if (s(trees)) trees.head
+    else until(s, c)(c(trees))
   /**
    * ЭТа функция создает дерева кода , оптимальное для кодирования текста `chars`.
    *
    * Параметр `chars` произвольный текст. Эта функция извлекает последовательность символов из текста и создает дерево кода
    * базирующегося на нем.
    */
-  def createCodeTree(chars: List[Char]): CodeTree = until(singleton, combine)( makeOrderedLeafList(times(chars)) ).head
+  def createCodeTree(chars: List[Char]): CodeTree =
+    until(singleton, combine)(makeOrderedLeafList(times(chars)))
 
 
   // Часть 3: Декодирование
@@ -152,13 +152,17 @@ object Huffman {
    * результирующий список символов.
    */
   def decode(tree: CodeTree, bits: List[Bit]): List[Char] = {
-    def traverse(remaining: CodeTree, bits: List[Bit]): List[Char] = remaining match {
-      case Leaf(c, _) if bits.isEmpty => List(c)
-      case Leaf(c, _) => c :: traverse(tree, bits)
-      case Fork(left, right, _, _) if bits.head == 0 => traverse(left, bits.tail)
-      case Fork(left, right, _, _) => traverse(right, bits.tail)
+    def rec(root: CodeTree, bitList: List[Bit], acc: List[Char]): List[Char] = bitList match {
+      case Nil => root match {
+        case Leaf(c, _) => acc :+ c
+        case Fork(_, _, _, _) => throw new Error("invalid secret")
+      }
+      case x :: xs => root match {
+        case Leaf(c, _) => rec(tree, bitList, acc :+ c)
+        case Fork(left, right, _, _) => rec(if (x == 0) left else right, xs, acc)
+      }
     }
-    traverse(tree, bits)
+    rec(tree, bits, List())
   }
   
   /**
@@ -187,13 +191,17 @@ object Huffman {
    * последовательность битов.
    */
   def encode(tree: CodeTree)(text: List[Char]): List[Bit] = {
-    def lookup(tree:  CodeTree)(c: Char): List[Bit] = tree match {
-      case Leaf(_, _) => List()
-      case Fork(left, right, _, _) if chars(left).contains(c) => 0 :: lookup(left)(c)
-      case Fork(left, right, _, _) => 1 :: lookup(right)(c)
+    def rec(root: CodeTree, acc: List[Bit])(charList: List[Char]): List[Bit] = charList match {
+      case Nil => acc
+      case x :: xs => root match {
+        case Leaf(_, _) => rec(tree, acc)(xs)
+        case Fork(left, right, _, _) =>
+          if (chars(left).contains(x)) rec(left, acc :+ 0)(charList)
+          else if (chars(right).contains(x)) rec(right, acc :+ 1)(charList)
+          else throw new Error("invalid tree")
+      }
     }
-
-    text flatMap lookup(tree)
+    rec(tree, List())(text)
   }
   
   // Часть 4b: Кодирование, использующее таблицу
@@ -204,8 +212,9 @@ object Huffman {
    * ЭТа функция возвращает последовательность битов, представляющая символ `char` в
    * кодовую таблицу `table`.
    */
-  def codeBits(table: CodeTable)(char: Char): List[Bit] = {
-    table.filter( (code) => code._1 == char ).head._2
+  def codeBits(table: CodeTable)(char: Char): List[Bit] = table.find(_._1 == char) match {
+    case Some((_, l)) => l
+    case None => throw new NoSuchElementException("bit sequence not found");
   }
   
   /**
@@ -216,9 +225,12 @@ object Huffman {
    * валидное кодовое дерево, которое может быть представлено в качестве кодовой таблицы. Используя кодовые таблицы
    * поддеревьев, подумайте о том, как построить кодовую таблицу для всего дерева.
    */
-  def convert(tree: CodeTree): CodeTable = tree match {
-    case Leaf(c, w) => List( (c, List()) )
-    case Fork(left, right, cs, w) => mergeCodeTables(convert(left), convert(right))
+  def convert(tree: CodeTree): CodeTable = {
+    def rec(root: CodeTree, code: List[Bit]): CodeTable = root match {
+      case Leaf(c, _) => List((c, code))
+      case Fork(left, right, _, _) => mergeCodeTables(rec(left, code :+ 0), rec(right, code :+ 1))
+    }
+    rec(tree, List())
   }
   
   /**
@@ -226,11 +238,8 @@ object Huffman {
    * используете ее в методе `convert`, этот метод merge может также производить некоторые трансформации 
    * над двумя параметрами кодовых таблиц.
    */
-  def mergeCodeTables(a: CodeTable, b: CodeTable): CodeTable = {
-    def prepend(b: Bit)(code: Code): Code = (code._1, b :: code._2)
-
-    a.map(prepend(0)) ::: b.map(prepend(1))
-  }
+  def mergeCodeTables(a: CodeTable, b: CodeTable): CodeTable =
+    a ::: b
   
   /**
    * Эта функция кодирует `text` согласно кодовому дереву `tree`.
@@ -238,5 +247,12 @@ object Huffman {
    * Для ускорения процесса кодирования, сначала она конвертирует кодовое дерево в кодовую таблицу
    * и затем использует ее для произведения непосредственно кодирования.
    */
-  def quickEncode(tree: CodeTree)(text: List[Char]): List[Bit] = text flatMap codeBits(convert(tree))
+  def quickEncode(tree: CodeTree)(text: List[Char]): List[Bit] = {
+    val table = convert(tree)
+    def rec(charList: List[Char], acc: List[Bit]): List[Bit] = charList match {
+      case Nil => acc
+      case x :: xs => rec(xs, acc ::: codeBits(table)(x))
+    }
+    rec(text, List())
+  }
 }
